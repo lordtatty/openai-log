@@ -2,8 +2,11 @@ package gptlog
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"time"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -81,13 +84,68 @@ func (u *Usage) cost(model string) float64 {
 }
 
 type AI struct {
-	Client       *openai.Client
-	Usage        Usage
-	DefaultModel string
+	Client        *openai.Client
+	Usage         Usage
+	DefaultModel  string
+	EnableLogging bool
+	logFile       *os.File
 }
 
-func (a *AI) ChatCompletion(r openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
-	ctx := context.Background()
+func (a *AI) initLogFile() error {
+	if a.logFile != nil {
+		return nil
+	}
+	timestamp := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("ai-log-%s.log", timestamp)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	a.logFile = file
+	return nil
+}
+
+func (a *AI) logJSON(data interface{}) error {
+	// Convert to JSON
+	entryJSON, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error marshaling log entry to JSON: %v", err)
+	}
+
+	// Write to log file
+	if a.logFile != nil {
+		_, err = a.logFile.WriteString("==============\n")
+		if err != nil {
+			return err
+		}
+		_, err = a.logFile.WriteString("==============\n")
+		if err != nil {
+			return err
+		}
+		_, err = a.logFile.Write(entryJSON)
+		if err != nil {
+			return err
+		}
+		_, err = a.logFile.WriteString("\n")
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *AI) logData(m []openai.ChatCompletionMessage, c []openai.ChatCompletionChoice) error {
+	if !a.EnableLogging {
+		return nil
+	}
+	if err := a.initLogFile(); err != nil {
+		log.Println("Error initializing log file:", err)
+		return err
+	}
+	return a.logJSON([]interface{}{m, c})
+}
+
+func (a *AI) CreateChatCompletion(ctx context.Context, r openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
 	if r.Model == "" {
 		r.Model = a.DefaultModel
 	} else {
@@ -99,15 +157,25 @@ func (a *AI) ChatCompletion(r openai.ChatCompletionRequest) (*openai.ChatComplet
 		return nil, fmt.Errorf("ChatCompletion error: %v", err)
 	}
 	a.Usage.Add(r.Model, resp.Usage)
+
+	// Log
+	if err := a.logData(r.Messages, resp.Choices); err != nil {
+		log.Println("Error logging Choices:", err)
+	}
+
 	return &resp, nil
 }
 
-func (a *AI) Embeddings(r openai.EmbeddingRequest) (*openai.EmbeddingResponse, error) {
-	ctx := context.Background()
+func (a *AI) CreateEmbeddings(ctx context.Context, r openai.EmbeddingRequestConverter) (*openai.EmbeddingResponse, error) {
 	resp, err := a.Client.CreateEmbeddings(ctx, r)
 	if err != nil {
-		return nil, fmt.Errorf("Embeddings error: %v", err)
+		return nil, fmt.Errorf("embeddings error: %v", err)
 	}
-	a.Usage.Add(string(r.Model), resp.Usage)
+	// if r is of type openai.EmbeddingRequest then store the usage, othjerwise alert
+	if cvr, ok := r.(openai.EmbeddingRequest); ok {
+		a.Usage.Add(string(cvr.Model), resp.Usage)
+	} else {
+		log.Println("Embeddings request is not of type openai.EmbeddingRequest, so we can't store the usage")
+	}
 	return &resp, nil
 }

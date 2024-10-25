@@ -3,7 +3,9 @@ package gptlog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"time"
@@ -164,6 +166,58 @@ func (a *AI) CreateChatCompletion(ctx context.Context, r openai.ChatCompletionRe
 	}
 
 	return &resp, nil
+}
+func (a *AI) ChatCompletionStream(ctx context.Context, r openai.ChatCompletionRequest, s chan openai.ChatCompletionStreamResponse) error {
+	if r.Model == "" {
+		r.Model = a.DefaultModel
+	} else {
+		log.Println(">>>>>>> CUSTOM MODEL USED: ", r.Model)
+	}
+	log.Println("Model: ", r.Model)
+	if r.StreamOptions == nil {
+		r.StreamOptions = &openai.StreamOptions{}
+	}
+	r.StreamOptions.IncludeUsage = true
+	stream, err := a.Client.CreateChatCompletionStream(ctx, r)
+	if err != nil {
+		return fmt.Errorf("ChatCompletionStream error: %v", err)
+	}
+	defer stream.Close()
+	choices := make([]openai.ChatCompletionChoice, 0)
+	for {
+		stream.Header()
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("ChatCompletionStream error: %v", err)
+		}
+		s <- resp
+		for i, c := range resp.Choices {
+			if i > len(choices) {
+				choices[i] = openai.ChatCompletionChoice{
+					Index:   c.Index,
+					Message: openai.ChatCompletionMessage{},
+					// LogProbs: openai.ChatCompletionLogProbs{},
+					// ContentFilterResults: ,
+				}
+				choices[i].Message.Content += c.Delta.Content
+				choices[i].Message.Role += c.Delta.Role
+			}
+		}
+		if resp.Usage != nil {
+			// only the last message has the usage
+			a.Usage.Add(r.Model, *resp.Usage)
+		}
+	}
+
+	// Log
+	if err := a.logData(r.Messages, choices); err != nil {
+		log.Println("Error logging Choices:", err)
+	}
+
+	return nil
 }
 
 func (a *AI) CreateEmbeddings(ctx context.Context, r openai.EmbeddingRequestConverter) (*openai.EmbeddingResponse, error) {

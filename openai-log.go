@@ -195,16 +195,18 @@ func (a *AI) ChatCompletionStream(ctx context.Context, r openai.ChatCompletionRe
 		}
 		s <- resp
 		for i, c := range resp.Choices {
-			if i > len(choices) {
-				choices[i] = openai.ChatCompletionChoice{
+			if i+1 > len(choices) {
+				newC := openai.ChatCompletionChoice{
 					Index:   c.Index,
 					Message: openai.ChatCompletionMessage{},
 					// LogProbs: openai.ChatCompletionLogProbs{},
 					// ContentFilterResults: ,
 				}
-				choices[i].Message.Content += c.Delta.Content
-				choices[i].Message.Role += c.Delta.Role
+				choices = append(choices, newC)
 			}
+			choices[i].Message.Content += c.Delta.Content
+			choices[i].Message.Role += c.Delta.Role
+
 		}
 		if resp.Usage != nil {
 			// only the last message has the usage
